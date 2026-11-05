@@ -1197,15 +1197,20 @@ def plot_advance(results, A, B, idx=-1, mode=None, filename="ett_advance_frame.p
 
 
 def animate_advance(results, A, B, filename="ett_advance.gif", mode=None, fps=6,
-                    on_tissue=True, show_A=False, hold_last=6, dpi=90):
+                    on_tissue=True, show_A=False, hold_last=6, dpi=90,
+                    last_png=True, png_dpi=130):
     """GIF of the tube advancing down the trachea: beam shape and force arrows on
     the left, trachea and arytenoid force traces (with a moving cursor) on the right.
 
     results   : list from sweep_path() (one model), or {mode: list} with mode= to choose
     fps       : frames per second
     hold_last : extra copies of the final frame, so the loop pauses before restarting
-    Other arguments as in plot_advance(). Returns the filename.
+    last_png  : also save the final frame as a PNG. True names it after the GIF
+                ('<name>_last.png'); a string gives the filename; False/None skips it
+    png_dpi   : resolution of that PNG
+    Other arguments as in plot_advance(). Returns the GIF filename.
     """
+    import os
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, PillowWriter
     results, mode = _select_mode_results(results, mode)
@@ -1215,6 +1220,12 @@ def animate_advance(results, A, B, filename="ett_advance.gif", mode=None, fps=6,
     anim = FuncAnimation(fig, lambda k: _draw_advance_frame(axs, results, k, A, B, mode, setup),
                          frames=frames, interval=1000.0 / fps)
     anim.save(filename, writer=PillowWriter(fps=fps), dpi=dpi)
+    if last_png:
+        if last_png is True:
+            last_png = os.path.splitext(filename)[0] + "_last.png"
+        _draw_advance_frame(axs, results, len(results) - 1, A, B, mode, setup)
+        fig.savefig(last_png, dpi=png_dpi)
+        print("Saved " + last_png)
     plt.close(fig)
     return filename
 
@@ -1394,8 +1405,6 @@ if __name__ == "__main__":
     pfilename = animate_advance(path, A, B, mode=anim_mode,
                                 filename=dt_string+f"ett_advance_{anim_mode}.gif")
     print("Saved " + pfilename)
-    plot_advance(path, A, B, mode=anim_mode, idx=-1,
-                 filename=dt_string+f"ett_advance_{anim_mode}_last.png")
     
     import matplotlib.pyplot as plt
     fig3, ax3 = plt.subplots()
