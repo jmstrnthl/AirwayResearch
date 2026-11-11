@@ -23,6 +23,7 @@ pyinstaller --onefile --windowed larynx_serial_gui.py
 
 *****************************************"""
 
+import bisect
 import json
 import os
 import queue
@@ -130,6 +131,9 @@ CHANNEL_DISPLAY_MODE_LABELS = {
 DISPLAY_MODE_LABEL_TO_KEY = {v: k for k, v in CHANNEL_DISPLAY_MODE_LABELS.items()}
 GRAMS_TO_NEWTONS = 0.00981
 MODEL_FORMULA_TEXT = "mass (g) = (DAC / a)^(-1/b)   |   Force (N) = mass × 0.00981"
+MARKER_LABEL_MAX_LEN = 60
+MARKER_ENTRY_WIDTH = 30
+MARKER_LINE_COLOR = "purple"
 
 
 
@@ -278,8 +282,35 @@ CSV_RECORD_HEADER = (
     "ch1-calib-b; ch2-calib-b; ch3-calib-b; ch4-calib-b; "
     "ch1-calib-tarevalue; ch2-calib-tarevalue; ch3-calib-tarevalue; ch4-calib-tarevalue; "
     "ch1-calib-slope; ch2-calib-slope; ch3-calib-slope; ch4-calib-slope; "
-    "ch1-Events; ch2-Events; ch3-Events; ch4-Events"
+    "ch1-Events; ch2-Events; ch3-Events; ch4-Events; "
+    "label"
 )
+
+
+# *****************************************************************************
+def sanitize_marker_label(text):
+    """
+    Marker label safe for a semicolon-separated CSV cell: single line, no ';',
+    trimmed, at most MARKER_LABEL_MAX_LEN characters.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    s = " ".join(text.replace(";", ",").split())
+    return s[:MARKER_LABEL_MAX_LEN].strip()
+
+
+# *****************************************************************************
+def marker_label_at(marker_times, marker_labels, t):
+    """
+    Label of the most recent marker placed at or before time t.
+
+    marker_times ... ascending list of marker times (epoch seconds, float).
+    marker_labels .. labels matching marker_times.
+    t .............. sample time (epoch seconds, float).
+    Returns '' if no marker was placed at or before t.
+    """
+    i = bisect.bisect_right(marker_times, t)
+    return marker_labels[i - 1] if i > 0 else ""
 
 
 # *****************************************************************************
@@ -350,12 +381,14 @@ def build_csv_record_row(
     settings,
     events=None,
     calib_channels=None,
+    label="",
 ):
     """
     Build one semicolon-separated CSV data row for recording.
 
     calib_channels: set of channel indices (0..3) for which calib-a/b/tare/slope
     columns are filled on this row; other channels leave those columns empty.
+    label: most recent marker label at this row's time ('' if none).
     """
     if events is None:
         events = ["", "", "", ""]
@@ -384,6 +417,7 @@ def build_csv_record_row(
                 parts.append("")
     for ch in range(4):
         parts.append(events[ch] if ch < len(events) else "")
+    parts.append(sanitize_marker_label(label))
     return f"{ts}; {sec_str};{';'.join(parts[2:])}\n"
 
 
@@ -892,7 +926,8 @@ def format_csv_timestamp(dt=None):
 
 
 # *****************************************************************************
-def format_record_row(dt, seconds_since_start, values, settings, events=None, calib_channels=None):
+def format_record_row(dt, seconds_since_start, values, settings, events=None, calib_channels=None,
+                      label=""):
     """
     ---------------------------------------------------------------
     format_record_row(...)
@@ -905,6 +940,7 @@ def format_record_row(dt, seconds_since_start, values, settings, events=None, ca
     settings ................ application settings dict (calibration, tare, slope).
     events .................. optional list of 4 event strings per channel.
     calib_channels .......... optional set of channel indices to include calib columns.
+    label ................... most recent marker label at dt ('' if none).
 
     OUTPUTS
     returns: str — one CSV data line (including newline).
@@ -914,7 +950,7 @@ def format_record_row(dt, seconds_since_start, values, settings, events=None, ca
     """
     return build_csv_record_row(
         dt, seconds_since_start, values, settings,
-        events=events, calib_channels=calib_channels,
+        events=events, calib_channels=calib_channels, label=label,
     )
 
 
@@ -2125,8 +2161,13 @@ class MainApp:
         self.dac_axis_initial_range_pending = True
         self.anim = None
         self.last_received_values = [None, None, None, None]  # latest value per channel
+        # Labeled time markers: ascending epoch-second times and matching labels
+        self.marker_times = []
+        self.marker_labels = []
+        self.marker_artists = []  # plot lines/text for markers, redrawn each frame
         self._build_menus()
         self._build_toolbar()
+        self._build_marker_bar()
         self._build_plot()
         self._build_status_bar()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -2172,7 +2213,7 @@ class MainApp:
         if path:
             try:
                 with open(path, "w", encoding="utf-8") as f:
-                    f.write("timestamp;ch1;ch2;ch3;ch4\n")
+                    f.write("timestamp;ch1;ch2;ch3;ch4;label\n")
                     n = len(self.plot_times)
                     for i in range(n):
                         t = self.plot_times[i]
@@ -2181,7 +2222,8 @@ class MainApp:
                         v2 = self.plot_values[1][i] if i < len(self.plot_values[1]) else ""
                         v3 = self.plot_values[2][i] if i < len(self.plot_values[2]) else ""
                         v4 = self.plot_values[3][i] if i < len(self.plot_values[3]) else ""
-                        f.write(f"{ts};{v1};{v2};{v3};{v4}\n")
+                        label = marker_label_at(self.marker_times, self.marker_labels, t)
+                        f.write(f"{ts};{v1};{v2};{v3};{v4};{label}\n")
                 messagebox.showinfo("Save As", f"Saved to {path}")
             except Exception as ex:
                 messagebox.showerror("Save As", str(ex))
@@ -2386,6 +2428,86 @@ class MainApp:
             )
             unit_lbl.pack(side=tk.LEFT)
             self.value_unit_labels.append(unit_lbl)
+
+    def _build_marker_bar(self):
+        """Row under the toolbar: label entry, Add marker / Clear markers, last-marker readout."""
+        bar = ttk.Frame(self.root, padding=(4, 0, 4, 4))
+        bar.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(bar, text="Marker label:").pack(side=tk.LEFT, padx=(2, 4))
+        self.marker_entry_var = tk.StringVar()
+        self.marker_entry = ttk.Entry(
+            bar, textvariable=self.marker_entry_var, width=MARKER_ENTRY_WIDTH,
+        )
+        self.marker_entry.pack(side=tk.LEFT, padx=2)
+        self.marker_entry.bind("<Return>", lambda e: self._add_marker())
+        self.marker_entry.bind("<KP_Enter>", lambda e: self._add_marker())
+        ttk.Button(bar, text="Add marker", command=self._add_marker).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="Clear markers", command=self._clear_markers).pack(side=tk.LEFT, padx=2)
+        self.marker_status_var = tk.StringVar(value="No markers")
+        tk.Label(
+            bar, textvariable=self.marker_status_var, fg=MARKER_LINE_COLOR,
+            font=("Segoe UI", 10, "bold"), anchor=tk.W,
+        ).pack(side=tk.LEFT, padx=(12, 0), fill=tk.X, expand=True)
+
+    def _add_marker(self):
+        """Record a marker (current time + typed label); following CSV rows carry this label."""
+        label = sanitize_marker_label(self.marker_entry_var.get())
+        if not label:
+            self.marker_status_var.set("Type a label first, then Add marker")
+            return
+        dt = datetime.now()
+        t = dt.timestamp()
+        i = bisect.bisect_right(self.marker_times, t)
+        self.marker_times.insert(i, t)
+        self.marker_labels.insert(i, label)
+        self.marker_entry_var.set("")
+        where = ""
+        if self.recording and self.record_start_time is not None:
+            where = f"  (t = {(dt - self.record_start_time).total_seconds():.1f} s in recording)"
+        self.marker_status_var.set(
+            f"Last marker: \"{label}\" at {dt.strftime('%H:%M:%S')}{where}"
+            f"   [{len(self.marker_times)} total]"
+        )
+
+    def _clear_markers(self):
+        """Remove all markers; rows recorded from now on get an empty label."""
+        self.marker_times = []
+        self.marker_labels = []
+        self._remove_marker_artists()
+        self.marker_status_var.set("No markers")
+
+    def _prune_markers_before(self, t_cutoff):
+        """Drop markers older than t_cutoff, keeping the latest one before it (its label still applies)."""
+        i = bisect.bisect_left(self.marker_times, t_cutoff)
+        if i > 1:
+            del self.marker_times[:i - 1]
+            del self.marker_labels[:i - 1]
+
+    def _remove_marker_artists(self):
+        for artist in self.marker_artists:
+            try:
+                artist.remove()
+            except (ValueError, AttributeError):
+                pass
+        self.marker_artists = []
+
+    def _draw_marker_lines(self, t0, plot_time_sec):
+        """Vertical line + label for each marker inside the visible time window."""
+        self._remove_marker_artists()
+        for t, label in zip(self.marker_times, self.marker_labels):
+            x = t - t0
+            if x < 0 or x > plot_time_sec:
+                continue
+            self.marker_artists.append(
+                self.ax.axvline(x, color=MARKER_LINE_COLOR, linestyle="--", linewidth=1.0)
+            )
+            self.marker_artists.append(
+                self.ax.text(
+                    x, 0.98, f" {label}", transform=self.ax.get_xaxis_transform(),
+                    color=MARKER_LINE_COLOR, fontsize=8, rotation=90,
+                    ha="left", va="top", clip_on=True,
+                )
+            )
 
     def _channel_display_mode(self, ch):
         mode = self.settings.get(
@@ -2614,9 +2736,10 @@ class MainApp:
             calib_channels = set(range(4))
             self.record_first_row_pending = False
         seconds_since_start = (dt - self.record_start_time).total_seconds()
+        label = marker_label_at(self.marker_times, self.marker_labels, dt.timestamp())
         row = format_record_row(
             dt, seconds_since_start, dac_values, self.settings,
-            events=events, calib_channels=calib_channels,
+            events=events, calib_channels=calib_channels, label=label,
         )
         self.record_file_handle.write(row)
 
@@ -2697,6 +2820,8 @@ class MainApp:
             return
         t0 = self.plot_times[0]
         time_sec = [t - t0 for t in self.plot_times]
+        self._prune_markers_before(t_cutoff)
+        self._draw_marker_lines(t0, float(plot_time_sec))
         for ch in range(4):
             self._ensure_line_on_axis(ch)
             if plot_ch[ch] and self.plot_values[ch]:
