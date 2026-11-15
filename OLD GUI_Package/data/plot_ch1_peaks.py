@@ -27,8 +27,8 @@ MIN_REL_PROMINENCE = 0.5     # secondary peaks need prominence >= this * wavefor
 GROUPS = [
     ("Rigid Stylet + Standard Tube",      0,  2),
     ("Rigid Stylet + Reinforced Tube",    3,  5),
-    ("Dynamic Stylet + Standard Tube",    6, 15),
-    ("Dynamic Stylet + Reinforced Tube", 16, 24),
+    ("Dynamic Introducer + Standard Tube",    6, 15),
+    ("Dynamic Introducer + Reinforced Tube", 16, 24),
 ]
 GROUP_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
 
@@ -186,7 +186,7 @@ def plot_force_trace(csv_path, t, y, waveforms, peaks, group_of):
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Force (normalized to largest peak)")
-    ax.set_title(f"ch1 force vs time with major peaks — {csv_path.name}")
+    ax.set_title(f"Force vs Time with Major Peaks")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", bbox_to_anchor=(1.005, 1), frameon=False)
     fig.tight_layout()
@@ -248,9 +248,10 @@ def plot_group_bars(csv_path, peaks_df, group_of, t, y, waveforms, peaks):
 
     ax.set_xticks(x)
     ax.set_xticklabels([l.replace(" + ", "\n+ ") for l in labels])
-    ax.set_ylabel("Mean peak force (normalized to largest peak)")
+    ax.set_ylabel("Mean Peak Force (normalized to largest peak)")
     ax.set_ylim(0, 1.15)
-    ax.set_title(f"Average peak force by condition (mean ± SD) — {csv_path.name}")
+    # ax.set_title(f"Average Peak Force by Condition (mean ± SD) — {csv_path.name}")
+    ax.set_title("Average Peak Force by Condition (mean ± SD)")
     ax.grid(True, axis="y", alpha=0.3, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
 
@@ -271,17 +272,23 @@ def plot_group_bars(csv_path, peaks_df, group_of, t, y, waveforms, peaks):
         pk = peaks[p]
         wax.plot(t[pk] - t0, y[pk], "o", markersize=7, markerfacecolor="none",
                  markeredgecolor="#d62728", markeredgewidth=1.5)
-        wax.set_title(f"Sample: W{w} (peak {p})", fontsize=9, color="#52514e")
-        wax.set_xlabel("Time from start (s)", fontsize=8)
-        wax.tick_params(labelsize=8)
+        print(f"  Sample waveform for {GROUPS[g][0]}: W{w} (peak {p})")
+        wax.set_xlabel("Time from start (s)", fontsize=11)
+        wax.tick_params(labelsize=10)
         wax.grid(True, alpha=0.3)
         wax.spines[["top", "right"]].set_visible(False)
         if g > 0:
             wax.tick_params(labelleft=False)
-    wave_axes[0].set_ylabel("Force (normalized)", fontsize=8)
+    wave_axes[0].set_ylabel("Force (normalized)", fontsize=11)
     wave_axes[0].set_ylim(-0.05, 1.05)
 
     fig.subplots_adjust(left=0.08, right=0.98, top=0.94, bottom=0.07)
+
+    # One title for the whole lower row, centered over the waveform panels.
+    left = wave_axes[0].get_position()
+    right = wave_axes[-1].get_position()
+    fig.text((left.x0 + right.x1) / 2, left.y1 + 0.015, "Sample Waveforms",
+             ha="center", va="bottom", fontsize=13, color="#0b0b0b")
 
     out_png = csv_path.with_name(csv_path.stem + "_ch1_peak_groups.png")
     fig.savefig(out_png, dpi=150)
