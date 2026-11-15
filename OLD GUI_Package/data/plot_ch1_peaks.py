@@ -109,7 +109,8 @@ def main():
     peaks_list_df.to_csv(csv_path.stem + "_ch1_peaks.png")
 
     plot_force_trace(csv_path, t, y_norm, waveforms, peaks, group_of)
-    plot_group_bars(csv_path, peaks_list_df, group_of)
+    plot_group_bars(csv_path, peaks_list_df, group_of, t, y_norm, waveforms,
+                    peaks)
     plt.show()
 
 
@@ -195,12 +196,16 @@ def plot_force_trace(csv_path, t, y, waveforms, peaks, group_of):
     print(f"Saved plot to {out_png}")
 
 
-def plot_group_bars(csv_path, peaks_df, group_of):
-    """Mean of the selected peaks per test condition, error bars = 1 SD."""
+def plot_group_bars(csv_path, peaks_df, group_of, t, y, waveforms, peaks):
+    """Mean of the selected peaks per test condition, error bars = 1 SD.
+
+    Under each bar is a sample waveform from that condition: the waveform
+    holding the selected peak closest to the condition's mean.
+    """
     sel = peaks_df[peaks_df["Peak"].isin(BAR_CHART_PEAKS)].copy()
     sel["Group"] = sel["Waveform"].map(group_of)
 
-    labels, means, sds, values = [], [], [], []
+    labels, means, sds, values, samples = [], [], [], [], []
     print("\nSelected peaks by group (normalized force; SD is sample SD, n-1):")
     for g, (label, _, _) in enumerate(GROUPS):
         rows = sel[sel["Group"] == g]
@@ -209,11 +214,21 @@ def plot_group_bars(csv_path, peaks_df, group_of):
         values.append(v)
         means.append(v.mean() if len(v) else np.nan)
         sds.append(v.std(ddof=1) if len(v) > 1 else np.nan)
+        if len(v):
+            closest = rows.iloc[int(np.argmin(np.abs(v - means[-1])))]
+            samples.append((int(closest["Waveform"]), int(closest["Peak"])))
+        else:
+            samples.append(None)
         print(f"  {label:<34} n={len(v)}  mean={means[-1]:.3f}  SD={sds[-1]:.3f}"
               f"  peaks {rows['Peak'].tolist()}")
 
-    fig, ax = plt.subplots(figsize=(9, 6))
-    x = np.arange(len(GROUPS))
+    n_groups = len(GROUPS)
+    fig = plt.figure(figsize=(11, 9))
+    gs = fig.add_gridspec(2, n_groups, height_ratios=[2.2, 1], hspace=0.38,
+                          wspace=0.12)
+    ax = fig.add_subplot(gs[0, :])
+    x = np.arange(n_groups)
+    ax.set_xlim(-0.5, n_groups - 0.5)  # one bar centered over each column
     ax.bar(x, means, width=0.6, color=GROUP_COLORS, edgecolor="white",
            linewidth=2, zorder=2)
     ax.errorbar(x, means, yerr=sds, fmt="none", ecolor="#0b0b0b",
@@ -238,7 +253,35 @@ def plot_group_bars(csv_path, peaks_df, group_of):
     ax.set_title(f"Average peak force by condition (mean ± SD) — {csv_path.name}")
     ax.grid(True, axis="y", alpha=0.3, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
+
+    # Sample waveform under each bar, time measured from waveform start.
+    pad_s = 1.0
+    wave_axes = []
+    for g, sample in enumerate(samples):
+        wax = fig.add_subplot(gs[1, g], sharey=wave_axes[0] if wave_axes else None)
+        wave_axes.append(wax)
+        if sample is None:
+            wax.set_axis_off()
+            continue
+        w, p = sample
+        s, e = waveforms[w]
+        t0 = t[s]
+        win = (t >= t0 - pad_s) & (t <= t[e - 1] + pad_s)
+        wax.plot(t[win] - t0, y[win], color=GROUP_COLORS[g], linewidth=1.5)
+        pk = peaks[p]
+        wax.plot(t[pk] - t0, y[pk], "o", markersize=7, markerfacecolor="none",
+                 markeredgecolor="#d62728", markeredgewidth=1.5)
+        wax.set_title(f"Sample: W{w} (peak {p})", fontsize=9, color="#52514e")
+        wax.set_xlabel("Time from start (s)", fontsize=8)
+        wax.tick_params(labelsize=8)
+        wax.grid(True, alpha=0.3)
+        wax.spines[["top", "right"]].set_visible(False)
+        if g > 0:
+            wax.tick_params(labelleft=False)
+    wave_axes[0].set_ylabel("Force (normalized)", fontsize=8)
+    wave_axes[0].set_ylim(-0.05, 1.05)
+
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.94, bottom=0.07)
 
     out_png = csv_path.with_name(csv_path.stem + "_ch1_peak_groups.png")
     fig.savefig(out_png, dpi=150)
